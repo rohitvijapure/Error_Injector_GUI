@@ -8,5 +8,6 @@ void  tui_shutdown(void);
 void  tui_refresh(app_config_t *cfg);
 void  tui_draw_input(const char *line, int cursor_pos);
 void  tui_log(const char *fmt, ...);
+void  tui_show_help(void);
 
 #endif /* CONSOLE_H */

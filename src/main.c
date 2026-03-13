@@ -258,33 +258,7 @@ static int parse_args(int argc, char **argv)
 
 static void cmd_help(void)
 {
-    tui_log("--- Layer 1 (Application) ---");
-    tui_log("  delay <1-15> [period <s>] [burst <s>]  Set delay injection");
-    tui_log("  delay off                               Disable delay");
-    tui_log("  drop count <1-500>                      Drop N pkt/s");
-    tui_log("  drop percent <1-100>                    Drop N%% of packets");
-    tui_log("  drop off                                Disable drop");
-    tui_log("  corrupt <1-95>                          Corrupt N%% of bytes");
-    tui_log("  corrupt off                             Disable corruption");
-    tui_log("  droppid <pid>                           Add PID to null list");
-    tui_log("  droppid remove <pid>                    Remove PID");
-    tui_log("  droppid off                             Disable PID drop");
-    tui_log("  filter src|dst <ip[:port]>              Set filter");
-    tui_log("  filter clear                            Clear filters");
-    tui_log("--- Layer 2 (tc netem) ---");
-    tui_log("  netem loss <0-100>                      Set loss %%");
-    tui_log("  netem delay <ms> [jitter_ms]            Set delay");
-    tui_log("  netem reorder <0-100>                   Set reorder %%");
-    tui_log("  netem duplicate <0-100>                 Set duplicate %%");
-    tui_log("  netem corrupt <0-100>                   Set corrupt %%");
-    tui_log("  netem iface <name>                      Set interface");
-    tui_log("  netem apply                             Apply to interface");
-    tui_log("  netem clear                             Remove netem rules");
-    tui_log("  netem status                            Query tc state");
-    tui_log("--- General ---");
-    tui_log("  status        Show settings   stop    Disable all L1");
-    tui_log("  reset         Reset stats     help    This message");
-    tui_log("  quit / exit   Shutdown");
+    tui_show_help();
 }
 
 static void process_cmd(const char *line)

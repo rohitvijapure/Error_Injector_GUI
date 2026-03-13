@@ -371,6 +371,91 @@ void tui_refresh(app_config_t *cfg)
 }
 
 /* ================================================================
+ *  Full-screen help overlay (press any key to dismiss)
+ * ================================================================ */
+
+void tui_show_help(void)
+{
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+
+    /* Compute centered box dimensions */
+    int box_w = (cols > 72) ? 70 : cols - 4;
+    int box_h = rows - 4;
+    int box_x = (cols - box_w) / 2;
+    int box_y = 2;
+
+    WINDOW *hw = newwin(box_h, box_w, box_y, box_x);
+    if (!hw) return;
+
+    keypad(hw, TRUE);
+    box(hw, 0, 0);
+
+    int y = 1;
+
+    wattron(hw, A_BOLD | COLOR_PAIR(1));
+    mvwprintw(hw, y++, 2, "HELP  -  Error Injector v2.0");
+    wattroff(hw, A_BOLD | COLOR_PAIR(1));
+    y++;
+
+    wattron(hw, A_BOLD | COLOR_PAIR(4));
+    mvwprintw(hw, y++, 2, "Layer 1  -  Application Injection");
+    wattroff(hw, A_BOLD | COLOR_PAIR(4));
+
+    mvwprintw(hw, y++, 2, "  delay <1-15> [period <s>] [burst <s>]");
+    mvwprintw(hw, y++, 2, "  delay off");
+    mvwprintw(hw, y++, 2, "  drop count <1-500>  |  drop percent <1-100>");
+    mvwprintw(hw, y++, 2, "  drop off");
+    mvwprintw(hw, y++, 2, "  corrupt <1-95>      |  corrupt off");
+    mvwprintw(hw, y++, 2, "  droppid <pid>       |  droppid remove <pid>");
+    mvwprintw(hw, y++, 2, "  droppid off");
+    mvwprintw(hw, y++, 2, "  filter src|dst <ip[:port]>  |  filter clear");
+    y++;
+
+    wattron(hw, A_BOLD | COLOR_PAIR(4));
+    mvwprintw(hw, y++, 2, "Layer 2  -  Network (tc netem)");
+    wattroff(hw, A_BOLD | COLOR_PAIR(4));
+
+    mvwprintw(hw, y++, 2, "  netem loss <0-100>           Set loss %%");
+    mvwprintw(hw, y++, 2, "  netem delay <ms> [jitter]    Set delay + jitter");
+    mvwprintw(hw, y++, 2, "  netem reorder <0-100>        Set reorder %%");
+    mvwprintw(hw, y++, 2, "  netem duplicate <0-100>      Set duplicate %%");
+    mvwprintw(hw, y++, 2, "  netem corrupt <0-100>        Set corrupt %%");
+    mvwprintw(hw, y++, 2, "  netem iface <name>           Set interface");
+    mvwprintw(hw, y++, 2, "  netem apply                  Apply to interface");
+    mvwprintw(hw, y++, 2, "  netem clear                  Remove netem rules");
+    mvwprintw(hw, y++, 2, "  netem status                 Query tc state");
+    y++;
+
+    wattron(hw, A_BOLD | COLOR_PAIR(4));
+    mvwprintw(hw, y++, 2, "General");
+    wattroff(hw, A_BOLD | COLOR_PAIR(4));
+
+    mvwprintw(hw, y++, 2, "  status     Show settings     stop     Disable all L1");
+    mvwprintw(hw, y++, 2, "  reset      Reset stats       help     This screen");
+    mvwprintw(hw, y++, 2, "  quit       Shutdown           exit     Shutdown");
+
+    if (y < box_h - 1) {
+        wattron(hw, A_DIM);
+        mvwprintw(hw, box_h - 2, 2, "Press any key to return...");
+        wattroff(hw, A_DIM);
+    }
+
+    wrefresh(hw);
+
+    /* Block until any key (switch to blocking mode temporarily) */
+    nodelay(hw, FALSE);
+    wtimeout(hw, -1);
+    wgetch(hw);
+
+    delwin(hw);
+
+    /* Restore halfdelay on stdscr and force full repaint */
+    halfdelay(5);
+    touchwin(stdscr);
+}
+
+/* ================================================================
  *  Input line (called after every keystroke and after refresh)
  * ================================================================ */
 
