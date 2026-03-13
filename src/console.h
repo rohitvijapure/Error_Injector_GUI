@@ -3,12 +3,10 @@
 
 #include "config.h"
 
-typedef struct {
-    app_config_t *cfg;
-} console_ctx_t;
-
-void  console_setup(void);
-void  console_restore(void);
-void *console_thread(void *arg);
+void  tui_init(void);
+void  tui_shutdown(void);
+void  tui_refresh(app_config_t *cfg);
+void  tui_draw_input(const char *line, int cursor_pos);
+void  tui_log(const char *fmt, ...);
 
 #endif /* CONSOLE_H */

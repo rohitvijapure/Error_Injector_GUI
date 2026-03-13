@@ -1,6 +1,6 @@
 CC       = gcc
 CFLAGS   = -Wall -Wextra -std=c11 -D_GNU_SOURCE -O2 $(shell pkg-config --cflags srt)
-LDFLAGS  = $(shell pkg-config --libs srt) -lpthread -lm
+LDFLAGS  = $(shell pkg-config --libs srt) -lpthread -lm -lncurses
 
 SRC_DIR  = src
 BUILD_DIR= build

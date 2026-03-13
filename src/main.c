@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <ncurses.h>
 #include <srt/srt.h>
 
 #include "config.h"
@@ -15,6 +16,7 @@
 #include "injector.h"
 #include "console.h"
 #include "filter.h"
+#include "netem.h"
 
 /* ==================================================================
  *  Global configuration (single instance)
@@ -256,26 +258,33 @@ static int parse_args(int argc, char **argv)
 
 static void cmd_help(void)
 {
-    printf(
-        "Commands:\n"
-        "  delay <1-15> [period <s>] [burst <s>]  Set delay injection\n"
-        "  delay off                               Disable delay\n"
-        "  drop count <1-500>                      Drop N packets/sec\n"
-        "  drop percent <1-100>                    Drop N%% of packets\n"
-        "  drop off                                Disable drop\n"
-        "  corrupt <1-95>                          Corrupt N%% of bytes\n"
-        "  corrupt off                             Disable corruption\n"
-        "  droppid <pid>                           Add PID to drop list\n"
-        "  droppid remove <pid>                    Remove PID from list\n"
-        "  droppid off                             Disable PID drop\n"
-        "  filter src <ip>[:<port>]                Set source filter\n"
-        "  filter dst <ip>[:<port>]                Set destination filter\n"
-        "  filter clear                            Clear all filters\n"
-        "  status                                  Show current settings\n"
-        "  stop                                    Disable all injection\n"
-        "  reset                                   Reset statistics\n"
-        "  help                                    This message\n"
-        "  quit / exit                             Shutdown\n");
+    tui_log("--- Layer 1 (Application) ---");
+    tui_log("  delay <1-15> [period <s>] [burst <s>]  Set delay injection");
+    tui_log("  delay off                               Disable delay");
+    tui_log("  drop count <1-500>                      Drop N pkt/s");
+    tui_log("  drop percent <1-100>                    Drop N%% of packets");
+    tui_log("  drop off                                Disable drop");
+    tui_log("  corrupt <1-95>                          Corrupt N%% of bytes");
+    tui_log("  corrupt off                             Disable corruption");
+    tui_log("  droppid <pid>                           Add PID to null list");
+    tui_log("  droppid remove <pid>                    Remove PID");
+    tui_log("  droppid off                             Disable PID drop");
+    tui_log("  filter src|dst <ip[:port]>              Set filter");
+    tui_log("  filter clear                            Clear filters");
+    tui_log("--- Layer 2 (tc netem) ---");
+    tui_log("  netem loss <0-100>                      Set loss %%");
+    tui_log("  netem delay <ms> [jitter_ms]            Set delay");
+    tui_log("  netem reorder <0-100>                   Set reorder %%");
+    tui_log("  netem duplicate <0-100>                 Set duplicate %%");
+    tui_log("  netem corrupt <0-100>                   Set corrupt %%");
+    tui_log("  netem iface <name>                      Set interface");
+    tui_log("  netem apply                             Apply to interface");
+    tui_log("  netem clear                             Remove netem rules");
+    tui_log("  netem status                            Query tc state");
+    tui_log("--- General ---");
+    tui_log("  status        Show settings   stop    Disable all L1");
+    tui_log("  reset         Reset stats     help    This message");
+    tui_log("  quit / exit   Shutdown");
 }
 
 static void process_cmd(const char *line)
@@ -293,7 +302,7 @@ static void process_cmd(const char *line)
     /* --- help --- */
     if (!strcmp(a, "help")) { cmd_help(); return; }
 
-    /* --- stop all injection --- */
+    /* --- stop all Layer 1 injection --- */
     if (!strcmp(a, "stop")) {
         pthread_rwlock_wrlock(&g_cfg.config_lock);
         g_cfg.injection.delay_enabled    = 0;
@@ -301,7 +310,7 @@ static void process_cmd(const char *line)
         g_cfg.injection.corrupt_enabled  = 0;
         g_cfg.injection.pid_drop_enabled = 0;
         pthread_rwlock_unlock(&g_cfg.config_lock);
-        printf("All error injection disabled\n");
+        tui_log("All Layer 1 error injection disabled");
         return;
     }
 
@@ -317,108 +326,107 @@ static void process_cmd(const char *line)
         atomic_store(&g_cfg.stats.bytes_forwarded,     (uint_fast64_t)0);
         for (int i = 0; i < MAX_TS_PIDS; i++)
             atomic_store(&g_cfg.stats.pid_drop_counts[i], (uint_fast64_t)0);
-        printf("Statistics reset\n");
+        tui_log("Statistics reset");
         return;
     }
 
     /* --- delay --- */
     if (!strcmp(a, "delay")) {
         if (n < 2) {
-            printf("Usage: delay <1-15> [period <s>] [burst <s>] | delay off\n");
+            tui_log("Usage: delay <1-15> [period <s>] [burst <s>] | delay off");
             return;
         }
         if (!strcmp(b, "off")) {
             pthread_rwlock_wrlock(&g_cfg.config_lock);
             g_cfg.injection.delay_enabled = 0;
             pthread_rwlock_unlock(&g_cfg.config_lock);
-            printf("Delay disabled\n");
+            tui_log("Delay disabled");
             return;
         }
         int v = atoi(b);
-        if (v < 1 || v > 15) { printf("Delay must be 1-15 seconds\n"); return; }
+        if (v < 1 || v > 15) { tui_log("Delay must be 1-15 seconds"); return; }
 
         pthread_rwlock_wrlock(&g_cfg.config_lock);
         g_cfg.injection.delay_enabled = 1;
         g_cfg.injection.delay_seconds = v;
-        /* parse optional "period X" and "burst Y" tokens */
         if (n >= 4 && !strcmp(c, "period")) g_cfg.injection.delay_period = atoi(d);
         if (n >= 6 && !strcmp(e, "burst"))  g_cfg.injection.delay_burst  = atoi(f);
         if (n >= 4 && !strcmp(c, "burst"))  g_cfg.injection.delay_burst  = atoi(d);
         pthread_rwlock_unlock(&g_cfg.config_lock);
 
-        printf("Delay: %ds  period=%ds  burst=%ds\n",
-               g_cfg.injection.delay_seconds,
-               g_cfg.injection.delay_period,
-               g_cfg.injection.delay_burst);
+        tui_log("Delay: %ds  period=%ds  burst=%ds",
+                g_cfg.injection.delay_seconds,
+                g_cfg.injection.delay_period,
+                g_cfg.injection.delay_burst);
         return;
     }
 
     /* --- drop --- */
     if (!strcmp(a, "drop")) {
         if (n < 2) {
-            printf("Usage: drop count <1-500> | drop percent <1-100> | drop off\n");
+            tui_log("Usage: drop count <1-500> | drop percent <1-100> | drop off");
             return;
         }
         if (!strcmp(b, "off")) {
             pthread_rwlock_wrlock(&g_cfg.config_lock);
             g_cfg.injection.drop_enabled = 0;
             pthread_rwlock_unlock(&g_cfg.config_lock);
-            printf("Drop disabled\n");
+            tui_log("Drop disabled");
             return;
         }
         if (!strcmp(b, "count") && n >= 3) {
             int v = atoi(c);
-            if (v < 1 || v > 500) { printf("Count: 1-500\n"); return; }
+            if (v < 1 || v > 500) { tui_log("Count: 1-500"); return; }
             pthread_rwlock_wrlock(&g_cfg.config_lock);
             g_cfg.injection.drop_enabled = 1;
             g_cfg.injection.drop_mode    = 0;
             g_cfg.injection.drop_count   = v;
             pthread_rwlock_unlock(&g_cfg.config_lock);
-            printf("Dropping %d packets/sec\n", v);
+            tui_log("Dropping %d packets/sec", v);
             return;
         }
         if (!strcmp(b, "percent") && n >= 3) {
             int v = atoi(c);
-            if (v < 1 || v > 100) { printf("Percent: 1-100\n"); return; }
+            if (v < 1 || v > 100) { tui_log("Percent: 1-100"); return; }
             pthread_rwlock_wrlock(&g_cfg.config_lock);
             g_cfg.injection.drop_enabled  = 1;
             g_cfg.injection.drop_mode     = 1;
             g_cfg.injection.drop_percent  = v;
             pthread_rwlock_unlock(&g_cfg.config_lock);
-            printf("Dropping %d%% of packets\n", v);
+            tui_log("Dropping %d%% of packets", v);
             return;
         }
-        printf("Usage: drop count <N> | drop percent <N> | drop off\n");
+        tui_log("Usage: drop count <N> | drop percent <N> | drop off");
         return;
     }
 
     /* --- corrupt --- */
     if (!strcmp(a, "corrupt")) {
         if (n < 2) {
-            printf("Usage: corrupt <1-95> | corrupt off\n");
+            tui_log("Usage: corrupt <1-95> | corrupt off");
             return;
         }
         if (!strcmp(b, "off")) {
             pthread_rwlock_wrlock(&g_cfg.config_lock);
             g_cfg.injection.corrupt_enabled = 0;
             pthread_rwlock_unlock(&g_cfg.config_lock);
-            printf("Corruption disabled\n");
+            tui_log("Corruption disabled");
             return;
         }
         int v = atoi(b);
-        if (v < 1 || v > 95) { printf("Corrupt: 1-95%%\n"); return; }
+        if (v < 1 || v > 95) { tui_log("Corrupt: 1-95%%"); return; }
         pthread_rwlock_wrlock(&g_cfg.config_lock);
         g_cfg.injection.corrupt_enabled = 1;
         g_cfg.injection.corrupt_percent = v;
         pthread_rwlock_unlock(&g_cfg.config_lock);
-        printf("Corruption: %d%% of bytes per packet\n", v);
+        tui_log("Corruption: %d%% of bytes per packet", v);
         return;
     }
 
     /* --- droppid --- */
     if (!strcmp(a, "droppid")) {
         if (n < 2) {
-            printf("Usage: droppid <pid> | droppid remove <pid> | droppid off\n");
+            tui_log("Usage: droppid <pid> | droppid remove <pid> | droppid off");
             return;
         }
         if (!strcmp(b, "off")) {
@@ -426,7 +434,7 @@ static void process_cmd(const char *line)
             g_cfg.injection.pid_drop_enabled = 0;
             g_cfg.injection.drop_pid_count   = 0;
             pthread_rwlock_unlock(&g_cfg.config_lock);
-            printf("PID drop disabled\n");
+            tui_log("PID drop disabled");
             return;
         }
         if (!strcmp(b, "remove") && n >= 3) {
@@ -445,7 +453,7 @@ static void process_cmd(const char *line)
                 }
             }
             pthread_rwlock_unlock(&g_cfg.config_lock);
-            printf("Removed PID %u\n", pid);
+            tui_log("Removed PID %u", pid);
             return;
         }
         /* Add a PID */
@@ -455,31 +463,31 @@ static void process_cmd(const char *line)
             g_cfg.injection.drop_pids[g_cfg.injection.drop_pid_count++] = pid;
             g_cfg.injection.pid_drop_enabled = 1;
         } else {
-            printf("Max %d PIDs reached\n", MAX_TS_PIDS);
+            tui_log("Max %d PIDs reached", MAX_TS_PIDS);
         }
         pthread_rwlock_unlock(&g_cfg.config_lock);
-        printf("Dropping PID %u (total: %d)\n", pid, g_cfg.injection.drop_pid_count);
+        tui_log("Dropping PID %u (total: %d)", pid, g_cfg.injection.drop_pid_count);
         return;
     }
 
     /* --- filter --- */
     if (!strcmp(a, "filter")) {
         if (n < 2) {
-            printf("Usage: filter src <ip[:port]> | filter dst <ip[:port]> | filter clear\n");
+            tui_log("Usage: filter src <ip[:port]> | filter dst <ip[:port]> | filter clear");
             return;
         }
         if (!strcmp(b, "clear")) {
             pthread_rwlock_wrlock(&g_cfg.config_lock);
             memset(&g_cfg.filter, 0, sizeof(g_cfg.filter));
             pthread_rwlock_unlock(&g_cfg.config_lock);
-            printf("Filters cleared\n");
+            tui_log("Filters cleared");
             return;
         }
         if ((!strcmp(b, "src") || !strcmp(b, "dst")) && n >= 3) {
             uint32_t ip;
             uint16_t port;
             if (filter_parse_addr(c, &ip, &port) < 0) {
-                printf("Invalid address format (use ip or ip:port)\n");
+                tui_log("Invalid address format (use ip or ip:port)");
                 return;
             }
             pthread_rwlock_wrlock(&g_cfg.config_lock);
@@ -492,10 +500,10 @@ static void process_cmd(const char *line)
             }
             g_cfg.filter.active = 1;
             pthread_rwlock_unlock(&g_cfg.config_lock);
-            printf("Filter updated\n");
+            tui_log("Filter updated");
             return;
         }
-        printf("Usage: filter src|dst <ip[:port]> | filter clear\n");
+        tui_log("Usage: filter src|dst <ip[:port]> | filter clear");
         return;
     }
 
@@ -504,41 +512,42 @@ static void process_cmd(const char *line)
         pthread_rwlock_rdlock(&g_cfg.config_lock);
         injection_config_t inj = g_cfg.injection;
         filter_config_t    flt = g_cfg.filter;
+        netem_config_t     nem = g_cfg.netem;
         pthread_rwlock_unlock(&g_cfg.config_lock);
 
-        printf("--- Current Settings ---\n");
+        tui_log("--- Current Settings ---");
 
         if (inj.delay_enabled)
-            printf("  Delay:    %ds  period=%ds  burst=%ds\n",
-                   inj.delay_seconds, inj.delay_period, inj.delay_burst);
+            tui_log("  Delay:    %ds  period=%ds  burst=%ds",
+                    inj.delay_seconds, inj.delay_period, inj.delay_burst);
         else
-            printf("  Delay:    OFF\n");
+            tui_log("  Delay:    OFF");
 
-        printf("  Drop:     ");
         if (inj.drop_enabled) {
             if (inj.drop_mode == 0)
-                printf("%d pkt/s\n", inj.drop_count);
+                tui_log("  Drop:     %d pkt/s", inj.drop_count);
             else
-                printf("%d%%\n", inj.drop_percent);
+                tui_log("  Drop:     %d%%", inj.drop_percent);
         } else {
-            printf("OFF\n");
+            tui_log("  Drop:     OFF");
         }
 
         if (inj.corrupt_enabled)
-            printf("  Corrupt:  %d%%\n", inj.corrupt_percent);
+            tui_log("  Corrupt:  %d%%", inj.corrupt_percent);
         else
-            printf("  Corrupt:  OFF\n");
+            tui_log("  Corrupt:  OFF");
 
-        printf("  PID drop:");
         if (inj.pid_drop_enabled && inj.drop_pid_count > 0) {
+            char tmp[128];
+            int p = 0;
             for (int i = 0; i < inj.drop_pid_count; i++)
-                printf(" %u", inj.drop_pids[i]);
-            printf("\n");
+                p += snprintf(tmp + p, sizeof(tmp) - p, "%s%u",
+                              i ? "," : "", inj.drop_pids[i]);
+            tui_log("  PID-drop: %s", tmp);
         } else {
-            printf(" OFF\n");
+            tui_log("  PID-drop: OFF");
         }
 
-        printf("  Filter:   ");
         if (flt.active) {
             char sip[INET_ADDRSTRLEN] = "*", dip[INET_ADDRSTRLEN] = "*";
             if (flt.src_ip) {
@@ -549,15 +558,168 @@ static void process_cmd(const char *line)
                 struct in_addr aa = { .s_addr = flt.dst_ip };
                 inet_ntop(AF_INET, &aa, dip, sizeof(dip));
             }
-            printf("src=%s:%u  dst=%s:%u\n",
-                   sip, flt.src_port, dip, flt.dst_port);
+            tui_log("  Filter:   src=%s:%u  dst=%s:%u",
+                    sip, flt.src_port, dip, flt.dst_port);
         } else {
-            printf("NONE\n");
+            tui_log("  Filter:   NONE");
         }
+
+        tui_log("  Netem:    %s on %s",
+                nem.active ? "ACTIVE" : "INACTIVE",
+                nem.iface[0] ? nem.iface : "(not set)");
         return;
     }
 
-    printf("Unknown command '%s'. Type 'help' for usage.\n", a);
+    /* ==============================================================
+     *  NETEM (Layer 2) commands
+     * ============================================================== */
+
+    if (!strcmp(a, "netem")) {
+        if (n < 2) {
+            tui_log("Usage: netem loss|delay|reorder|duplicate|corrupt|apply|clear|iface|status");
+            return;
+        }
+
+        /* netem loss <percent> */
+        if (!strcmp(b, "loss")) {
+            if (n < 3) { tui_log("Usage: netem loss <0-100>"); return; }
+            double v = atof(c);
+            if (v < 0 || v > 100) { tui_log("Loss: 0-100"); return; }
+            pthread_rwlock_wrlock(&g_cfg.config_lock);
+            g_cfg.netem.loss_percent = v;
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+            tui_log("netem loss staged: %.1f%% (run 'netem apply')", v);
+            return;
+        }
+
+        /* netem delay <ms> [jitter_ms] */
+        if (!strcmp(b, "delay")) {
+            if (n < 3) { tui_log("Usage: netem delay <ms> [jitter_ms]"); return; }
+            int ms = atoi(c);
+            int jit = (n >= 4) ? atoi(d) : 0;
+            if (ms < 0) { tui_log("Delay must be >= 0"); return; }
+            pthread_rwlock_wrlock(&g_cfg.config_lock);
+            g_cfg.netem.delay_ms  = ms;
+            g_cfg.netem.jitter_ms = jit;
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+            tui_log("netem delay staged: %dms jitter %dms (run 'netem apply')", ms, jit);
+            return;
+        }
+
+        /* netem reorder <percent> */
+        if (!strcmp(b, "reorder")) {
+            if (n < 3) { tui_log("Usage: netem reorder <0-100>"); return; }
+            double v = atof(c);
+            if (v < 0 || v > 100) { tui_log("Reorder: 0-100"); return; }
+            pthread_rwlock_wrlock(&g_cfg.config_lock);
+            g_cfg.netem.reorder_percent = v;
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+            tui_log("netem reorder staged: %.1f%% (run 'netem apply')", v);
+            return;
+        }
+
+        /* netem duplicate <percent> */
+        if (!strcmp(b, "duplicate")) {
+            if (n < 3) { tui_log("Usage: netem duplicate <0-100>"); return; }
+            double v = atof(c);
+            if (v < 0 || v > 100) { tui_log("Duplicate: 0-100"); return; }
+            pthread_rwlock_wrlock(&g_cfg.config_lock);
+            g_cfg.netem.duplicate_percent = v;
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+            tui_log("netem duplicate staged: %.1f%% (run 'netem apply')", v);
+            return;
+        }
+
+        /* netem corrupt <percent> */
+        if (!strcmp(b, "corrupt")) {
+            if (n < 3) { tui_log("Usage: netem corrupt <0-100>"); return; }
+            double v = atof(c);
+            if (v < 0 || v > 100) { tui_log("Corrupt: 0-100"); return; }
+            pthread_rwlock_wrlock(&g_cfg.config_lock);
+            g_cfg.netem.corrupt_percent = v;
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+            tui_log("netem corrupt staged: %.1f%% (run 'netem apply')", v);
+            return;
+        }
+
+        /* netem iface <name> */
+        if (!strcmp(b, "iface")) {
+            if (n < 3) { tui_log("Usage: netem iface <name>"); return; }
+            pthread_rwlock_wrlock(&g_cfg.config_lock);
+            strncpy(g_cfg.netem.iface, c, sizeof(g_cfg.netem.iface) - 1);
+            g_cfg.netem.iface[sizeof(g_cfg.netem.iface) - 1] = '\0';
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+            tui_log("netem interface set to '%s'", c);
+            return;
+        }
+
+        /* netem apply */
+        if (!strcmp(b, "apply")) {
+            pthread_rwlock_rdlock(&g_cfg.config_lock);
+            netem_config_t nc = g_cfg.netem;
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+
+            if (!nc.iface[0]) {
+                tui_log("netem: set interface first (netem iface <name>)");
+                return;
+            }
+            int ret = netem_apply(&nc);
+            pthread_rwlock_wrlock(&g_cfg.config_lock);
+            g_cfg.netem.active = nc.active;
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+            if (ret == 0)
+                tui_log("netem applied on %s", nc.iface);
+            else
+                tui_log("netem apply FAILED on %s (need root?)", nc.iface);
+            return;
+        }
+
+        /* netem clear */
+        if (!strcmp(b, "clear")) {
+            pthread_rwlock_rdlock(&g_cfg.config_lock);
+            char iface[64];
+            strncpy(iface, g_cfg.netem.iface, sizeof(iface));
+            iface[sizeof(iface) - 1] = '\0';
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+
+            netem_clear(iface);
+            pthread_rwlock_wrlock(&g_cfg.config_lock);
+            g_cfg.netem.active = 0;
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+            tui_log("netem cleared on %s", iface);
+            return;
+        }
+
+        /* netem status */
+        if (!strcmp(b, "status")) {
+            pthread_rwlock_rdlock(&g_cfg.config_lock);
+            char iface[64];
+            strncpy(iface, g_cfg.netem.iface, sizeof(iface));
+            iface[sizeof(iface) - 1] = '\0';
+            pthread_rwlock_unlock(&g_cfg.config_lock);
+
+            char buf[1024] = "";
+            netem_query(iface, buf, sizeof(buf));
+            if (buf[0]) {
+                /* Print each line of tc output to the log */
+                char *saveptr = NULL;
+                char *tok = strtok_r(buf, "\n", &saveptr);
+                while (tok) {
+                    tui_log("  %s", tok);
+                    tok = strtok_r(NULL, "\n", &saveptr);
+                }
+            } else {
+                tui_log("netem: no qdisc on %s",
+                        iface[0] ? iface : "(not set)");
+            }
+            return;
+        }
+
+        tui_log("Unknown netem command '%s'. Type 'help'.", b);
+        return;
+    }
+
+    tui_log("Unknown command '%s'. Type 'help'.", a);
 }
 
 /* ==================================================================
@@ -581,6 +743,11 @@ int main(int argc, char **argv)
     if (parse_args(argc, argv) != 0)
         return 1;
 
+    /* Default netem interface to output interface */
+    if (!g_cfg.netem.iface[0] && g_cfg.output_iface[0])
+        strncpy(g_cfg.netem.iface, g_cfg.output_iface,
+                sizeof(g_cfg.netem.iface) - 1);
+
     pthread_rwlock_init(&g_cfg.config_lock, NULL);
     g_cfg.running = 1;
     setup_signals(on_signal);
@@ -599,7 +766,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Ring buffer between receiver → injector */
+    /* Ring buffer between receiver -> injector */
     packet_buffer_t ring;
     if (packet_buffer_init(&ring, RING_BUFFER_SIZE) != 0) {
         log_error("Failed to allocate ring buffer");
@@ -622,31 +789,75 @@ int main(int argc, char **argv)
 
     /* Thread contexts */
     receiver_ctx_t recv_ctx = { .cfg = &g_cfg, .buffer = &ring };
-    console_ctx_t  con_ctx  = { .cfg = &g_cfg };
 
-    /* Set up console display (scroll region) */
-    console_setup();
+    /* Start ncurses TUI */
+    tui_init();
+    tui_log("Error Injector v2.0 started");
 
-    /* Spawn worker threads */
-    pthread_t t_recv, t_inj, t_con;
-    pthread_create(&t_recv, NULL, receiver_thread,  &recv_ctx);
-    pthread_create(&t_inj,  NULL, injector_thread,  &inj_ctx);
-    pthread_create(&t_con,  NULL, console_thread,   &con_ctx);
+    /* Spawn worker threads (no console thread — main handles TUI) */
+    pthread_t t_recv, t_inj;
+    pthread_create(&t_recv, NULL, receiver_thread, &recv_ctx);
+    pthread_create(&t_inj,  NULL, injector_thread, &inj_ctx);
 
-    /* Interactive command loop on main thread */
-    char line[512];
+    /* ========================================================
+     *  Main loop: ncurses display refresh + character input
+     * ======================================================== */
+
+    char cmdline[512] = "";
+    int  cmdpos = 0;
+
     while (g_cfg.running) {
-        printf("> ");
-        fflush(stdout);
-        if (!fgets(line, sizeof(line), stdin))
-            break;
-        line[strcspn(line, "\n")] = '\0';
-        if (line[0])
-            process_cmd(line);
+        tui_refresh(&g_cfg);
+        tui_draw_input(cmdline, cmdpos);
+
+        int ch = getch();
+
+        if (ch == ERR)
+            continue;
+
+        if (ch == KEY_RESIZE) {
+            clear();
+            continue;
+        }
+
+        if (ch == '\n' || ch == KEY_ENTER) {
+            cmdline[cmdpos] = '\0';
+            if (cmdpos > 0) {
+                tui_log("> %s", cmdline);
+                process_cmd(cmdline);
+            }
+            cmdpos = 0;
+            cmdline[0] = '\0';
+            continue;
+        }
+
+        if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
+            if (cmdpos > 0) {
+                cmdpos--;
+                cmdline[cmdpos] = '\0';
+            }
+            tui_draw_input(cmdline, cmdpos);
+            continue;
+        }
+
+        if (cmdpos < (int)sizeof(cmdline) - 1 && ch >= 32 && ch < 127) {
+            cmdline[cmdpos++] = (char)ch;
+            cmdline[cmdpos] = '\0';
+            tui_draw_input(cmdline, cmdpos);
+        }
     }
 
     /* --- Graceful shutdown --- */
     g_cfg.running = 0;
+
+    /* Auto-clear netem rules */
+    if (g_cfg.netem.active) {
+        netem_clear(g_cfg.netem.iface);
+        g_cfg.netem.active = 0;
+    }
+
+    /* Shutdown TUI before joining threads (so error messages go to stderr) */
+    tui_shutdown();
 
     /* Unblock receiver thread */
     if (g_cfg.input_type == STREAM_SRT) {
@@ -662,9 +873,6 @@ int main(int argc, char **argv)
 
     pthread_join(t_recv, NULL);
     pthread_join(t_inj,  NULL);
-    pthread_join(t_con,  NULL);
-
-    console_restore();
 
     injector_destroy(&inj_ctx);
     packet_buffer_destroy(&ring);

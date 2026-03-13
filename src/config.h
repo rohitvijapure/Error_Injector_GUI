@@ -67,6 +67,17 @@ typedef struct {
 } stats_t;
 
 typedef struct {
+    char     iface[64];
+    int      active;
+    double   loss_percent;      /* 0-100 */
+    int      delay_ms;
+    int      jitter_ms;
+    double   reorder_percent;   /* 0-100 */
+    double   duplicate_percent; /* 0-100 */
+    double   corrupt_percent;   /* 0-100 */
+} netem_config_t;
+
+typedef struct {
     uint8_t            data[MAX_PACKET_SIZE];
     int                length;
     struct sockaddr_in src_addr;
@@ -93,6 +104,7 @@ typedef struct {
     /* Runtime config (protected by config_lock) */
     filter_config_t    filter;
     injection_config_t injection;
+    netem_config_t     netem;
 
     /* Statistics (lock-free atomics) */
     stats_t            stats;
