@@ -443,14 +443,14 @@ void tui_show_help(void)
 
     wrefresh(hw);
 
-    /* Block until any key (switch to blocking mode temporarily) */
+    /* Cancel halfdelay (program-wide) so wgetch truly blocks */
+    cbreak();
     nodelay(hw, FALSE);
-    wtimeout(hw, -1);
     wgetch(hw);
 
     delwin(hw);
 
-    /* Restore halfdelay on stdscr and force full repaint */
+    /* Restore halfdelay mode and force full repaint */
     halfdelay(5);
     touchwin(stdscr);
 }
