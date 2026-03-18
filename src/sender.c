@@ -56,6 +56,8 @@ int sender_init(app_config_t *cfg)
             cfg->srt_output_sock          = s;
             cfg->srt_accepted_output_sock = accepted;
         } else {
+            int conntimeo = (cfg->srt_conntimeo > 0) ? cfg->srt_conntimeo : 10000;
+            srt_setsockflag(s, SRTO_CONNTIMEO, &conntimeo, sizeof(conntimeo));
             inet_pton(AF_INET, cfg->output_addr, &sa.sin_addr);
             if (srt_connect(s, (struct sockaddr *)&sa, sizeof(sa)) == SRT_ERROR) {
                 log_error("SRT output connect: %s", srt_getlasterror_str());

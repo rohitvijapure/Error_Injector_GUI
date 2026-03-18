@@ -93,6 +93,7 @@ typedef struct {
     char               input_iface[64];
     srt_mode_t         srt_mode;
     int                srt_latency;
+    int                srt_conntimeo;
 
     /* Output */
     stream_type_t      output_type;

@@ -107,6 +107,8 @@ static int init_srt(app_config_t *cfg)
         }
         log_info("SRT listening on port %d", cfg->input_port);
     } else {
+        int conntimeo = (cfg->srt_conntimeo > 0) ? cfg->srt_conntimeo : 10000;
+        srt_setsockflag(s, SRTO_CONNTIMEO, &conntimeo, sizeof(conntimeo));
         inet_pton(AF_INET, cfg->input_addr, &sa.sin_addr);
         if (srt_connect(s, (struct sockaddr *)&sa, sizeof(sa)) == SRT_ERROR) {
             log_error("SRT connect: %s", srt_getlasterror_str());

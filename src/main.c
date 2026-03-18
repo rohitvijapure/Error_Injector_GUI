@@ -55,6 +55,7 @@ static void print_help(const char *prog)
         "  --input-iface <iface>                  Network interface (e.g. eth0)\n"
         "  --srt-mode <listener|caller>           SRT input mode (default: listener)\n"
         "  --srt-latency <ms>                     SRT latency (default: 120)\n"
+        "  --srt-conntimeo <ms>                    SRT connection timeout (default: 10000)\n"
         "  --srt-output-mode <listener|caller>    SRT output mode (default: caller)\n\n"
         "Output:\n"
         "  --output-type <udp|multicast|srt>      Stream type (default: udp)\n"
@@ -81,7 +82,7 @@ static void print_help(const char *prog)
 
 enum {
     O_ITYPE = 1000, O_IADDR, O_IPORT, O_IIFACE,
-    O_SRTM, O_SRTL, O_SRTOM,
+    O_SRTM, O_SRTL, O_SRTC, O_SRTOM,
     O_OTYPE, O_OADDR, O_OPORT, O_OIFACE, O_OTTL,
     O_FSIP, O_FSPORT, O_FDIP, O_FDPORT,
     O_DELAY, O_DPERIOD, O_DBURST,
@@ -95,6 +96,7 @@ static struct option long_opts[] = {
     { "input-iface",     1, 0, O_IIFACE },
     { "srt-mode",        1, 0, O_SRTM   },
     { "srt-latency",     1, 0, O_SRTL   },
+    { "srt-conntimeo",   1, 0, O_SRTC   },
     { "srt-output-mode", 1, 0, O_SRTOM  },
     { "output-type",     1, 0, O_OTYPE  },
     { "output-addr",     1, 0, O_OADDR  },
@@ -144,6 +146,9 @@ static int parse_args(int argc, char **argv)
             break;
         case O_SRTL:
             g_cfg.srt_latency = atoi(optarg);
+            break;
+        case O_SRTC:
+            g_cfg.srt_conntimeo = atoi(optarg);
             break;
         case O_SRTOM:
             g_cfg.srt_output_mode = !strcasecmp(optarg, "listener")
@@ -711,6 +716,7 @@ int main(int argc, char **argv)
     /* Defaults */
     memset(&g_cfg, 0, sizeof(g_cfg));
     g_cfg.srt_latency              = 120;
+    g_cfg.srt_conntimeo            = 10000;  /* 10 s connection timeout */
     g_cfg.output_ttl               = 5;
     g_cfg.injection.delay_period   = 30;
     g_cfg.injection.delay_burst    = 10;
