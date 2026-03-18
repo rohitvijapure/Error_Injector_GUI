@@ -17,28 +17,56 @@ int sender_init(app_config_t *cfg)
             return -1;
         }
 
+        int tt = SRTT_LIVE;
+        srt_setsockflag(s, SRTO_TRANSTYPE, &tt, sizeof(tt));
+
         int lat = cfg->srt_latency;
         srt_setsockflag(s, SRTO_RCVLATENCY,  &lat, sizeof(lat));
         srt_setsockflag(s, SRTO_PEERLATENCY, &lat, sizeof(lat));
-
-        int tt = SRTT_LIVE;
-        srt_setsockflag(s, SRTO_TRANSTYPE, &tt, sizeof(tt));
 
         struct sockaddr_in sa;
         memset(&sa, 0, sizeof(sa));
         sa.sin_family = AF_INET;
         sa.sin_port   = htons(cfg->output_port);
-        inet_pton(AF_INET, cfg->output_addr, &sa.sin_addr);
 
-        if (srt_connect(s, (struct sockaddr *)&sa, sizeof(sa)) == SRT_ERROR) {
-            log_error("SRT output connect: %s", srt_getlasterror_str());
-            srt_close(s);
-            return -1;
+        if (cfg->srt_output_mode == SRT_MODE_LISTENER) {
+            sa.sin_addr.s_addr = INADDR_ANY;
+            if (srt_bind(s, (struct sockaddr *)&sa, sizeof(sa)) == SRT_ERROR ||
+                srt_listen(s, 1) == SRT_ERROR) {
+                log_error("SRT output listen: %s", srt_getlasterror_str());
+                srt_close(s);
+                return -1;
+            }
+            log_info("SRT output listening on port %d (waiting for caller...)",
+                     cfg->output_port);
+
+            struct sockaddr_in ca;
+            int calen = sizeof(ca);
+            SRTSOCKET accepted = srt_accept(s, (struct sockaddr *)&ca, &calen);
+            if (accepted == SRT_INVALID_SOCK) {
+                log_error("SRT output accept: %s", srt_getlasterror_str());
+                srt_close(s);
+                return -1;
+            }
+            char ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof(ip));
+            log_info("SRT output caller connected from %s:%d",
+                     ip, ntohs(ca.sin_port));
+
+            cfg->srt_output_sock          = s;
+            cfg->srt_accepted_output_sock = accepted;
+        } else {
+            inet_pton(AF_INET, cfg->output_addr, &sa.sin_addr);
+            if (srt_connect(s, (struct sockaddr *)&sa, sizeof(sa)) == SRT_ERROR) {
+                log_error("SRT output connect: %s", srt_getlasterror_str());
+                srt_close(s);
+                return -1;
+            }
+            log_info("SRT output connected to %s:%d",
+                     cfg->output_addr, cfg->output_port);
+            cfg->srt_output_sock          = s;
+            cfg->srt_accepted_output_sock = SRT_INVALID_SOCK;
         }
-
-        cfg->srt_output_sock = s;
-        log_info("SRT output connected to %s:%d",
-                 cfg->output_addr, cfg->output_port);
         return 0;
     }
 
@@ -85,6 +113,10 @@ int sender_init(app_config_t *cfg)
 void sender_cleanup(app_config_t *cfg)
 {
     if (cfg->output_type == STREAM_SRT) {
+        if (cfg->srt_accepted_output_sock != SRT_INVALID_SOCK) {
+            srt_close(cfg->srt_accepted_output_sock);
+            cfg->srt_accepted_output_sock = SRT_INVALID_SOCK;
+        }
         if (cfg->srt_output_sock != SRT_INVALID_SOCK) {
             srt_close(cfg->srt_output_sock);
             cfg->srt_output_sock = SRT_INVALID_SOCK;
@@ -102,10 +134,16 @@ int sender_send(app_config_t *cfg, const packet_t *pkt)
     int ret;
 
     if (cfg->output_type == STREAM_SRT) {
-        ret = srt_sendmsg(cfg->srt_output_sock,
+        SRTSOCKET send_sock = (cfg->srt_output_mode == SRT_MODE_LISTENER &&
+                               cfg->srt_accepted_output_sock != SRT_INVALID_SOCK)
+                              ? cfg->srt_accepted_output_sock
+                              : cfg->srt_output_sock;
+        ret = srt_sendmsg(send_sock,
                           (const char *)pkt->data, pkt->length, -1, 1);
-        if (ret == SRT_ERROR)
+        if (ret == SRT_ERROR) {
+            log_error("srt_sendmsg: %s", srt_getlasterror_str());
             return -1;
+        }
     } else {
         ret = (int)sendto(cfg->output_fd, pkt->data, pkt->length, 0,
                           (struct sockaddr *)&cfg->output_sockaddr,

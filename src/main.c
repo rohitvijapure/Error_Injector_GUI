@@ -53,8 +53,9 @@ static void print_help(const char *prog)
         "  --input-addr <addr>                    Address (multicast group or SRT target)\n"
         "  --input-port <port>                    Port to bind/listen\n"
         "  --input-iface <iface>                  Network interface (e.g. eth0)\n"
-        "  --srt-mode <listener|caller>           SRT mode (default: listener)\n"
-        "  --srt-latency <ms>                     SRT latency (default: 120)\n\n"
+        "  --srt-mode <listener|caller>           SRT input mode (default: listener)\n"
+        "  --srt-latency <ms>                     SRT latency (default: 120)\n"
+        "  --srt-output-mode <listener|caller>    SRT output mode (default: caller)\n\n"
         "Output:\n"
         "  --output-type <udp|multicast|srt>      Stream type (default: udp)\n"
         "  --output-addr <addr>                   Destination address\n"
@@ -80,7 +81,7 @@ static void print_help(const char *prog)
 
 enum {
     O_ITYPE = 1000, O_IADDR, O_IPORT, O_IIFACE,
-    O_SRTM, O_SRTL,
+    O_SRTM, O_SRTL, O_SRTOM,
     O_OTYPE, O_OADDR, O_OPORT, O_OIFACE, O_OTTL,
     O_FSIP, O_FSPORT, O_FDIP, O_FDPORT,
     O_DELAY, O_DPERIOD, O_DBURST,
@@ -94,6 +95,7 @@ static struct option long_opts[] = {
     { "input-iface",     1, 0, O_IIFACE },
     { "srt-mode",        1, 0, O_SRTM   },
     { "srt-latency",     1, 0, O_SRTL   },
+    { "srt-output-mode", 1, 0, O_SRTOM  },
     { "output-type",     1, 0, O_OTYPE  },
     { "output-addr",     1, 0, O_OADDR  },
     { "output-port",     1, 0, O_OPORT  },
@@ -142,6 +144,10 @@ static int parse_args(int argc, char **argv)
             break;
         case O_SRTL:
             g_cfg.srt_latency = atoi(optarg);
+            break;
+        case O_SRTOM:
+            g_cfg.srt_output_mode = !strcasecmp(optarg, "listener")
+                                    ? SRT_MODE_LISTENER : SRT_MODE_CALLER;
             break;
 
         /* Output */
@@ -713,6 +719,7 @@ int main(int argc, char **argv)
     g_cfg.srt_input_sock           = SRT_INVALID_SOCK;
     g_cfg.srt_output_sock          = SRT_INVALID_SOCK;
     g_cfg.srt_accepted_sock        = SRT_INVALID_SOCK;
+    g_cfg.srt_accepted_output_sock = SRT_INVALID_SOCK;
 
     if (parse_args(argc, argv) != 0)
         return 1;
@@ -843,6 +850,18 @@ int main(int argc, char **argv)
         g_cfg.srt_input_sock    = SRT_INVALID_SOCK;
     } else if (g_cfg.input_fd >= 0) {
         shutdown(g_cfg.input_fd, SHUT_RDWR);
+    }
+
+    /* Unblock output if SRT listener is waiting for a caller */
+    if (g_cfg.output_type == STREAM_SRT) {
+        if (g_cfg.srt_accepted_output_sock != SRT_INVALID_SOCK) {
+            srt_close(g_cfg.srt_accepted_output_sock);
+            g_cfg.srt_accepted_output_sock = SRT_INVALID_SOCK;
+        }
+        if (g_cfg.srt_output_sock != SRT_INVALID_SOCK) {
+            srt_close(g_cfg.srt_output_sock);
+            g_cfg.srt_output_sock = SRT_INVALID_SOCK;
+        }
     }
 
     pthread_join(t_recv, NULL);

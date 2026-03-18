@@ -247,7 +247,8 @@ void *injector_thread(void *arg)
         }
 
         /* Forward packet */
-        sender_send(cfg, &pkt);
+        if (sender_send(cfg, &pkt) != 0)
+            log_error("sender_send failed; packet lost");
     }
 
     /* Flush remaining delayed packets on shutdown */
