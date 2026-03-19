@@ -24,6 +24,9 @@ int sender_init(app_config_t *cfg)
         srt_setsockflag(s, SRTO_RCVLATENCY,  &lat, sizeof(lat));
         srt_setsockflag(s, SRTO_PEERLATENCY, &lat, sizeof(lat));
 
+        int payload = 1456; /* max IPv4: MTU(1500) - UDP(28) - SRT(16) */
+        srt_setsockflag(s, SRTO_PAYLOADSIZE, &payload, sizeof(payload));
+
         struct sockaddr_in sa;
         memset(&sa, 0, sizeof(sa));
         sa.sin_family = AF_INET;
@@ -140,11 +143,24 @@ int sender_send(app_config_t *cfg, const packet_t *pkt)
                                cfg->srt_accepted_output_sock != SRT_INVALID_SOCK)
                               ? cfg->srt_accepted_output_sock
                               : cfg->srt_output_sock;
-        ret = srt_sendmsg(send_sock,
-                          (const char *)pkt->data, pkt->length, -1, 1);
-        if (ret == SRT_ERROR) {
-            log_error("srt_sendmsg: %s", srt_getlasterror_str());
-            return -1;
+
+        /* SRT live mode limits each srt_sendmsg to SRTO_PAYLOADSIZE (1456 B).
+         * For MPEG-TS, chunk on 188-byte boundaries to keep TS packets intact.
+         * For other data, chunk at 1456 bytes. */
+        int max_chunk = (pkt->length > 0 && pkt->data[0] == TS_SYNC_BYTE)
+                        ? (1456 / TS_PACKET_SIZE) * TS_PACKET_SIZE  /* 1316 */
+                        : 1456;
+        int offset = 0;
+        while (offset < pkt->length) {
+            int chunk = pkt->length - offset;
+            if (chunk > max_chunk) chunk = max_chunk;
+            ret = srt_sendmsg(send_sock,
+                              (const char *)pkt->data + offset, chunk, -1, 1);
+            if (ret == SRT_ERROR) {
+                log_error("srt_sendmsg: %s", srt_getlasterror_str());
+                return -1;
+            }
+            offset += chunk;
         }
     } else {
         ret = (int)sendto(cfg->output_fd, pkt->data, pkt->length, 0,

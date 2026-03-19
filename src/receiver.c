@@ -92,6 +92,9 @@ static int init_srt(app_config_t *cfg)
     int rcv_timeout = 1000; /* ms — lets receiver_thread check cfg->running */
     srt_setsockflag(s, SRTO_RCVTIMEO, &rcv_timeout, sizeof(rcv_timeout));
 
+    int payload = 1456; /* max IPv4: MTU(1500) - UDP(28) - SRT(16) */
+    srt_setsockflag(s, SRTO_PAYLOADSIZE, &payload, sizeof(payload));
+
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
