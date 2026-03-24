@@ -229,10 +229,12 @@ void *injector_thread(void *arg)
                 atomic_fetch_add(&cfg->stats.pkts_corrupted, 1);
             }
 
-            /* 3. PID nullify */
-            int pn = do_pid_drop(ctx, &pkt);
-            if (pn > 0)
-                atomic_fetch_add(&cfg->stats.pkts_pid_nullified, (uint64_t)pn);
+            /* 3. PID nullify — only meaningful for MPEG-TS streams, skip for raw UDP bypass */
+            if (cfg->input_type != STREAM_SRT_BYPASS) {
+                int pn = do_pid_drop(ctx, &pkt);
+                if (pn > 0)
+                    atomic_fetch_add(&cfg->stats.pkts_pid_nullified, (uint64_t)pn);
+            }
 
             /* 4. Delay */
             int ds = check_delay(ctx, now);

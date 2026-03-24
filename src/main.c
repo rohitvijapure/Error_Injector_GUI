@@ -36,10 +36,11 @@ static void on_signal(int sig)
 
 static stream_type_t parse_type(const char *s)
 {
-    if (!strcasecmp(s, "udp"))       return STREAM_UDP;
-    if (!strcasecmp(s, "multicast")) return STREAM_MULTICAST;
-    if (!strcasecmp(s, "rtp"))       return STREAM_RTP;
-    if (!strcasecmp(s, "srt"))       return STREAM_SRT;
+    if (!strcasecmp(s, "udp"))         return STREAM_UDP;
+    if (!strcasecmp(s, "multicast"))   return STREAM_MULTICAST;
+    if (!strcasecmp(s, "rtp"))         return STREAM_RTP;
+    if (!strcasecmp(s, "srt"))         return STREAM_SRT;
+    if (!strcasecmp(s, "srt-bypass"))  return STREAM_SRT_BYPASS;
     fprintf(stderr, "Unknown stream type '%s', defaulting to UDP\n", s);
     return STREAM_UDP;
 }
@@ -49,7 +50,7 @@ static void print_help(const char *prog)
     printf(
         "Usage: %s [OPTIONS]\n\n"
         "Input:\n"
-        "  --input-type <udp|multicast|rtp|srt>  Stream type (default: udp)\n"
+        "  --input-type <udp|multicast|rtp|srt|srt-bypass>  Stream type (default: udp)\n"
         "  --input-addr <addr>                    Address (multicast group or SRT target)\n"
         "  --input-port <port>                    Port to bind/listen\n"
         "  --input-iface <iface>                  Network interface (e.g. eth0)\n"
@@ -57,8 +58,14 @@ static void print_help(const char *prog)
         "  --srt-latency <ms>                     SRT latency (default: 120)\n"
         "  --srt-conntimeo <ms>                    SRT connection timeout (default: 10000)\n"
         "  --srt-output-mode <listener|caller>    SRT output mode (default: caller)\n\n"
+        "SRT Bypass mode (raw UDP proxy — injects errors before SRT sees them):\n"
+        "  Use --input-type srt-bypass --output-type srt-bypass\n"
+        "  The tool acts as a transparent UDP proxy between SRT caller and listener.\n"
+        "  All Layer 1 errors (drop, delay, corrupt) affect raw SRT/UDP packets.\n"
+        "  --input-port listens for the SRT caller.\n"
+        "  --output-addr/--output-port is the real SRT listener.\n\n"
         "Output:\n"
-        "  --output-type <udp|multicast|srt>      Stream type (default: udp)\n"
+        "  --output-type <udp|multicast|srt|srt-bypass>      Stream type (default: udp)\n"
         "  --output-addr <addr>                   Destination address\n"
         "  --output-port <port>                   Destination port\n"
         "  --output-iface <iface>                 Network interface\n"
@@ -258,6 +265,13 @@ static int parse_args(int argc, char **argv)
     }
     if (!g_cfg.output_port || !g_cfg.output_addr[0]) {
         fprintf(stderr, "Error: --output-addr and --output-port are required\n");
+        return -1;
+    }
+    /* For srt-bypass, both input and output must use the same mode */
+    if ((g_cfg.input_type == STREAM_SRT_BYPASS) !=
+        (g_cfg.output_type == STREAM_SRT_BYPASS)) {
+        fprintf(stderr,
+                "Error: --input-type srt-bypass requires --output-type srt-bypass and vice versa\n");
         return -1;
     }
     return 0;
@@ -722,6 +736,8 @@ int main(int argc, char **argv)
     g_cfg.injection.delay_burst    = 10;
     g_cfg.input_fd                 = -1;
     g_cfg.output_fd                = -1;
+    g_cfg.bypass_fd                = -1;
+    g_cfg.bypass_client_active     = 0;
     g_cfg.srt_input_sock           = SRT_INVALID_SOCK;
     g_cfg.srt_output_sock          = SRT_INVALID_SOCK;
     g_cfg.srt_accepted_sock        = SRT_INVALID_SOCK;
@@ -854,6 +870,9 @@ int main(int argc, char **argv)
             srt_close(g_cfg.srt_input_sock);
         g_cfg.srt_accepted_sock = SRT_INVALID_SOCK;
         g_cfg.srt_input_sock    = SRT_INVALID_SOCK;
+    } else if (g_cfg.input_type == STREAM_SRT_BYPASS) {
+        if (g_cfg.input_fd >= 0)  shutdown(g_cfg.input_fd,  SHUT_RDWR);
+        if (g_cfg.bypass_fd >= 0) shutdown(g_cfg.bypass_fd, SHUT_RDWR);
     } else if (g_cfg.input_fd >= 0) {
         shutdown(g_cfg.input_fd, SHUT_RDWR);
     }

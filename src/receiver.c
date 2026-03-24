@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <sys/socket.h>
+#include <poll.h>
 
 /* ------------------------------------------------------------------ */
 /*  UDP / Multicast / RTP socket setup                                */
@@ -127,12 +128,87 @@ static int init_srt(app_config_t *cfg)
 }
 
 /* ------------------------------------------------------------------ */
+/*  SRT Bypass (bidirectional UDP proxy) socket setup                */
+/* ------------------------------------------------------------------ */
+
+static int init_srt_bypass(app_config_t *cfg)
+{
+    /* Socket facing the SRT caller (listens on input_port) */
+    int fd_in = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd_in < 0) {
+        log_error("bypass input socket: %s", strerror(errno));
+        return -1;
+    }
+
+    int on = 1;
+    setsockopt(fd_in, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+    int rcvbuf = 4 * 1024 * 1024;
+    setsockopt(fd_in, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    setsockopt(fd_in, SOL_SOCKET, SO_SNDBUF, &rcvbuf, sizeof(rcvbuf));
+
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(fd_in, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family      = AF_INET;
+    sa.sin_port        = htons(cfg->input_port);
+    sa.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(fd_in, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        log_error("bypass input bind port %d: %s", cfg->input_port, strerror(errno));
+        close(fd_in);
+        return -1;
+    }
+
+    if (cfg->input_iface[0])
+        setsockopt(fd_in, SOL_SOCKET, SO_BINDTODEVICE,
+                   cfg->input_iface, strlen(cfg->input_iface) + 1);
+
+    /* Socket facing the SRT listener (connects to output_addr:output_port) */
+    int fd_out = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd_out < 0) {
+        log_error("bypass output socket: %s", strerror(errno));
+        close(fd_in);
+        return -1;
+    }
+
+    setsockopt(fd_out, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    setsockopt(fd_out, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    setsockopt(fd_out, SOL_SOCKET, SO_SNDBUF, &rcvbuf, sizeof(rcvbuf));
+    setsockopt(fd_out, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (cfg->output_iface[0])
+        setsockopt(fd_out, SOL_SOCKET, SO_BINDTODEVICE,
+                   cfg->output_iface, strlen(cfg->output_iface) + 1);
+
+    /* Pre-populate the destination address */
+    memset(&cfg->output_sockaddr, 0, sizeof(cfg->output_sockaddr));
+    cfg->output_sockaddr.sin_family = AF_INET;
+    cfg->output_sockaddr.sin_port   = htons(cfg->output_port);
+    inet_pton(AF_INET, cfg->output_addr, &cfg->output_sockaddr.sin_addr);
+
+    cfg->input_fd  = fd_in;
+    cfg->bypass_fd = fd_out;
+    cfg->output_fd = fd_out;  /* sender_send() uses output_fd for forward direction */
+
+    log_info("SRT Bypass: listening for SRT caller on port %d, forwarding to %s:%d",
+             cfg->input_port, cfg->output_addr, cfg->output_port);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Public API                                                        */
 /* ------------------------------------------------------------------ */
 
 int receiver_init(app_config_t *cfg)
 {
-    return (cfg->input_type == STREAM_SRT) ? init_srt(cfg) : init_udp(cfg);
+    if (cfg->input_type == STREAM_SRT)
+        return init_srt(cfg);
+    if (cfg->input_type == STREAM_SRT_BYPASS)
+        return init_srt_bypass(cfg);
+    return init_udp(cfg);
 }
 
 void receiver_cleanup(app_config_t *cfg)
@@ -144,6 +220,16 @@ void receiver_cleanup(app_config_t *cfg)
             srt_close(cfg->srt_input_sock);
         cfg->srt_accepted_sock = SRT_INVALID_SOCK;
         cfg->srt_input_sock    = SRT_INVALID_SOCK;
+    } else if (cfg->input_type == STREAM_SRT_BYPASS) {
+        if (cfg->input_fd >= 0) {
+            close(cfg->input_fd);
+            cfg->input_fd = -1;
+        }
+        if (cfg->bypass_fd >= 0 && cfg->bypass_fd != cfg->output_fd) {
+            close(cfg->bypass_fd);
+        }
+        cfg->bypass_fd = -1;
+        cfg->output_fd = -1;
     } else {
         if (cfg->input_fd >= 0) {
             if (cfg->input_type == STREAM_MULTICAST) {
@@ -170,7 +256,67 @@ void *receiver_thread(void *arg)
     packet_buffer_t *buf = ctx->buffer;
     packet_t pkt;
 
-    if (cfg->input_type == STREAM_SRT) {
+    if (cfg->input_type == STREAM_SRT_BYPASS) {
+        /* --- SRT Bypass bidirectional UDP proxy loop --- */
+        struct pollfd pfds[2];
+        pfds[0].fd     = cfg->input_fd;   /* caller-facing socket */
+        pfds[0].events = POLLIN;
+        pfds[1].fd     = cfg->bypass_fd;  /* destination-facing socket */
+        pfds[1].events = POLLIN;
+
+        while (cfg->running) {
+            int ready = poll(pfds, 2, 1000); /* 1s timeout to check running */
+            if (ready < 0) {
+                if (errno == EINTR) continue;
+                if (cfg->running)
+                    log_error("bypass poll: %s", strerror(errno));
+                break;
+            }
+            if (ready == 0)
+                continue;
+
+            /* Packet from SRT Caller → forward to Destination */
+            if (pfds[0].revents & POLLIN) {
+                struct sockaddr_in from;
+                socklen_t flen = sizeof(from);
+                pkt.direction = 0;
+                pkt.length    = 0;
+                ssize_t n = recvfrom(cfg->input_fd, pkt.data, MAX_PACKET_SIZE,
+                                     0, (struct sockaddr *)&from, &flen);
+                if (n > 0) {
+                    pkt.length   = (int)n;
+                    pkt.src_addr = from;
+                    pkt.dst_addr = cfg->output_sockaddr;
+                    clock_gettime(CLOCK_MONOTONIC, &pkt.recv_time);
+                    /* Save the caller address for the backward path */
+                    cfg->bypass_client_addr   = from;
+                    cfg->bypass_client_active = 1;
+                    atomic_fetch_add(&cfg->stats.pkts_received, 1);
+                    atomic_fetch_add(&cfg->stats.bytes_received, (uint64_t)n);
+                    packet_buffer_enqueue(buf, &pkt);
+                }
+            }
+
+            /* Packet from SRT Destination → return to Caller */
+            if ((pfds[1].revents & POLLIN) && cfg->bypass_client_active) {
+                struct sockaddr_in from;
+                socklen_t flen = sizeof(from);
+                pkt.direction = 1;
+                pkt.length    = 0;
+                ssize_t n = recvfrom(cfg->bypass_fd, pkt.data, MAX_PACKET_SIZE,
+                                     0, (struct sockaddr *)&from, &flen);
+                if (n > 0) {
+                    pkt.length   = (int)n;
+                    pkt.src_addr = from;
+                    pkt.dst_addr = cfg->bypass_client_addr;
+                    clock_gettime(CLOCK_MONOTONIC, &pkt.recv_time);
+                    /* Return path: enqueue with direction=1 — injector forwards back */
+                    packet_buffer_enqueue(buf, &pkt);
+                }
+            }
+        }
+
+    } else if (cfg->input_type == STREAM_SRT) {
         /* --- SRT receive loop --- */
         if (cfg->srt_mode == SRT_MODE_LISTENER) {
             log_info("Waiting for SRT caller...");

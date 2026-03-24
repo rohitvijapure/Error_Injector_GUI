@@ -9,6 +9,10 @@
 
 int sender_init(app_config_t *cfg)
 {
+    /* SRT Bypass sockets are fully managed by receiver — nothing to do here */
+    if (cfg->output_type == STREAM_SRT_BYPASS)
+        return 0;
+
     /* --- SRT output --- */
     if (cfg->output_type == STREAM_SRT) {
         SRTSOCKET s = srt_create_socket();
@@ -117,6 +121,8 @@ int sender_init(app_config_t *cfg)
 
 void sender_cleanup(app_config_t *cfg)
 {
+    if (cfg->output_type == STREAM_SRT_BYPASS)
+        return;  /* bypass sockets cleaned up by receiver_cleanup */
     if (cfg->output_type == STREAM_SRT) {
         if (cfg->srt_accepted_output_sock != SRT_INVALID_SOCK) {
             srt_close(cfg->srt_accepted_output_sock);
@@ -138,7 +144,26 @@ int sender_send(app_config_t *cfg, const packet_t *pkt)
 {
     int ret;
 
-    if (cfg->output_type == STREAM_SRT) {
+    if (cfg->output_type == STREAM_SRT_BYPASS) {
+        /* Bidirectional UDP proxy:
+         *   direction 0 = forward: caller → destination
+         *   direction 1 = backward: destination → caller */
+        if (pkt->direction == 1 && cfg->bypass_client_active) {
+            /* Send back to the SRT caller */
+            ret = (int)sendto(cfg->input_fd, pkt->data, pkt->length, 0,
+                              (struct sockaddr *)&cfg->bypass_client_addr,
+                              sizeof(cfg->bypass_client_addr));
+        } else {
+            /* Send forward to the SRT listener */
+            ret = (int)sendto(cfg->bypass_fd, pkt->data, pkt->length, 0,
+                              (struct sockaddr *)&cfg->output_sockaddr,
+                              sizeof(cfg->output_sockaddr));
+        }
+        if (ret < 0) {
+            log_error("bypass sendto: %s", strerror(errno));
+            return -1;
+        }
+    } else if (cfg->output_type == STREAM_SRT) {
         SRTSOCKET send_sock = (cfg->srt_output_mode == SRT_MODE_LISTENER &&
                                cfg->srt_accepted_output_sock != SRT_INVALID_SOCK)
                               ? cfg->srt_accepted_output_sock

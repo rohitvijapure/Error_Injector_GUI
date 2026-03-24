@@ -19,7 +19,8 @@ typedef enum {
     STREAM_UDP = 0,
     STREAM_MULTICAST,
     STREAM_RTP,
-    STREAM_SRT
+    STREAM_SRT,
+    STREAM_SRT_BYPASS   /* bidirectional UDP proxy — injects errors on raw SRT/UDP packets */
 } stream_type_t;
 
 typedef enum {
@@ -83,6 +84,7 @@ typedef struct {
     struct sockaddr_in src_addr;
     struct sockaddr_in dst_addr;
     struct timespec    recv_time;
+    int                direction; /* 0 = forward (caller->dest), 1 = backward (dest->caller) */
 } packet_t;
 
 typedef struct {
@@ -118,11 +120,13 @@ typedef struct {
     /* Sockets */
     int                input_fd;
     int                output_fd;
+    int                bypass_fd;             /* SRT_BYPASS: second UDP socket facing destination */
     SRTSOCKET          srt_input_sock;
     SRTSOCKET          srt_output_sock;
     SRTSOCKET          srt_accepted_sock;
     SRTSOCKET          srt_accepted_output_sock;
     struct sockaddr_in output_sockaddr;
-} app_config_t;
+    struct sockaddr_in bypass_client_addr;    /* SRT_BYPASS: saved caller IP:port */
+    int                bypass_client_active;  /* SRT_BYPASS: 1 once caller is known */} app_config_t;
 
 #endif /* CONFIG_H */
