@@ -82,12 +82,18 @@ static int init_srt(app_config_t *cfg)
         return -1;
     }
 
+    int tt = SRTT_LIVE;
+    srt_setsockflag(s, SRTO_TRANSTYPE, &tt, sizeof(tt));
+
     int lat = cfg->srt_latency;
     srt_setsockflag(s, SRTO_RCVLATENCY,  &lat, sizeof(lat));
     srt_setsockflag(s, SRTO_PEERLATENCY, &lat, sizeof(lat));
 
-    int tt = SRTT_LIVE;
-    srt_setsockflag(s, SRTO_TRANSTYPE, &tt, sizeof(tt));
+    int rcv_timeout = 1000; /* ms — lets receiver_thread check cfg->running */
+    srt_setsockflag(s, SRTO_RCVTIMEO, &rcv_timeout, sizeof(rcv_timeout));
+
+    int payload = 1456; /* max IPv4: MTU(1500) - UDP(28) - SRT(16) */
+    srt_setsockflag(s, SRTO_PAYLOADSIZE, &payload, sizeof(payload));
 
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
@@ -104,6 +110,8 @@ static int init_srt(app_config_t *cfg)
         }
         log_info("SRT listening on port %d", cfg->input_port);
     } else {
+        int conntimeo = (cfg->srt_conntimeo > 0) ? cfg->srt_conntimeo : 10000;
+        srt_setsockflag(s, SRTO_CONNTIMEO, &conntimeo, sizeof(conntimeo));
         inet_pton(AF_INET, cfg->input_addr, &sa.sin_addr);
         if (srt_connect(s, (struct sockaddr *)&sa, sizeof(sa)) == SRT_ERROR) {
             log_error("SRT connect: %s", srt_getlasterror_str());
@@ -187,9 +195,15 @@ void *receiver_thread(void *arg)
                        : cfg->srt_input_sock;
 
         while (cfg->running) {
-            memset(&pkt, 0, sizeof(packet_t) - MAX_PACKET_SIZE);
+            pkt.length = 0;
+            memset(&pkt.src_addr,  0, sizeof(pkt.src_addr));
+            memset(&pkt.dst_addr,  0, sizeof(pkt.dst_addr));
+            memset(&pkt.recv_time, 0, sizeof(pkt.recv_time));
             int n = srt_recvmsg(rs, (char *)pkt.data, MAX_PACKET_SIZE);
             if (n == SRT_ERROR) {
+                int err = srt_getlasterror(NULL);
+                if (err == SRT_ETIMEOUT)
+                    continue; /* 1-second timeout — loop back and check running */
                 if (cfg->running)
                     log_error("srt_recvmsg: %s", srt_getlasterror_str());
                 break;
@@ -198,6 +212,9 @@ void *receiver_thread(void *arg)
             clock_gettime(CLOCK_MONOTONIC, &pkt.recv_time);
             inet_pton(AF_INET, cfg->input_addr, &pkt.src_addr.sin_addr);
             pkt.src_addr.sin_port = htons(cfg->input_port);
+            pkt.dst_addr.sin_family = AF_INET;
+            pkt.dst_addr.sin_port   = htons(cfg->input_port);
+            inet_pton(AF_INET, cfg->input_addr, &pkt.dst_addr.sin_addr);
 
             atomic_fetch_add(&cfg->stats.pkts_received, 1);
             atomic_fetch_add(&cfg->stats.bytes_received, (uint64_t)n);

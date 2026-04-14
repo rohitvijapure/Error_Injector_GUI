@@ -93,6 +93,7 @@ typedef struct {
     char               input_iface[64];
     srt_mode_t         srt_mode;
     int                srt_latency;
+    int                srt_conntimeo;
 
     /* Output */
     stream_type_t      output_type;
@@ -100,6 +101,7 @@ typedef struct {
     int                output_port;
     char               output_iface[64];
     int                output_ttl;
+    srt_mode_t         srt_output_mode;
 
     /* Runtime config (protected by config_lock) */
     filter_config_t    filter;
@@ -119,6 +121,7 @@ typedef struct {
     SRTSOCKET          srt_input_sock;
     SRTSOCKET          srt_output_sock;
     SRTSOCKET          srt_accepted_sock;
+    SRTSOCKET          srt_accepted_output_sock;
     struct sockaddr_in output_sockaddr;
 } app_config_t;
 
